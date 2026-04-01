@@ -11,8 +11,6 @@ public:
     ~CalcFFTOriginal() = default;
 
     void Calc(const Param& oParam_p, Sample<double>& oFunc_p, Sample<double>& oRes_p);
-
-private:
     void CreateFunction(const Param& oParam_p, Sample<double>& oFunction_p);
     void CalcFourier(SampleComplex& oSample_p);
     void ShiftSample(SampleComplex& oSample_p);

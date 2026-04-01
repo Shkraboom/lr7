@@ -7,78 +7,138 @@
 #include <vector>
 #include <numeric>
 #include <cmath>
+#include <functional>
 
 using Clock = std::chrono::high_resolution_clock;
 
-template <typename CalcType>
-double benchmarkCalc(CalcType& calc, const Param& param, int iterations) {
+double measure(int iterations, const std::function<void()>& fn) {
     std::vector<double> times;
     times.reserve(iterations);
-
-    for (int iter = 0; iter < iterations; ++iter) {
-        Sample<double> func, res;
+    for (int i = 0; i < iterations; ++i) {
         auto t0 = Clock::now();
-        calc.Calc(param, func, res);
+        fn();
         auto t1 = Clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        times.push_back(ms);
+        times.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
     }
-
     return std::accumulate(times.begin(), times.end(), 0.0) / times.size();
 }
 
-void runBenchmark(int sampleSize, int iterations) {
+int main() {
+    const int N = 1024;
+    const int iters = 20;
+
     Param param;
-    param.setSampleSize(sampleSize);
+    param.setSampleSize(N);
     param.m_dFunctionSize = 1.0;
     param.m_bIsCircle = true;
     param.RecalculateSteps();
 
-    std::cout << "=== N = " << sampleSize
-              << ", iterations = " << iterations << " ===" << std::endl;
+    CalcFFTOriginal orig;
+    CalcFFTOptimized opt;
 
-    CalcFFTOriginal original;
-    double tOrig = benchmarkCalc(original, param, iterations);
+    std::cout << std::fixed << std::setprecision(1);
+    std::cout << "N = " << N << ", iterations = " << iters << "\n\n";
 
-    CalcFFTOptimized optimized;
-    double tOpt = benchmarkCalc(optimized, param, iterations);
-
-    double speedup = tOrig / tOpt;
-
-    std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  Original:  " << tOrig << " ms (avg)" << std::endl;
-    std::cout << "  Optimized: " << tOpt  << " ms (avg)" << std::endl;
-    std::cout << "  Speedup:   " << speedup << "x" << std::endl;
-
-    Sample<double> funcOrig, resOrig, funcOpt, resOpt;
-    original.Calc(param, funcOrig, resOrig);
-    optimized.Calc(param, funcOpt, resOpt);
-
-    double maxDiff = 0.0;
-    for (int j = 0; j < sampleSize; ++j) {
-        for (int i = 0; i < sampleSize; ++i) {
-            maxDiff = std::max(maxDiff, std::abs(resOrig(i, j) - resOpt(i, j)));
-        }
+    {
+        double tOrig = measure(iters, [&]() {
+            Sample<double> f(N, N);
+            orig.CreateFunction(param, f);
+        });
+        double tOpt = measure(iters, [&]() {
+            Sample<double> f(N, N);
+            opt.CreateFunction(param, f);
+        });
+        std::cout << "CreateFunction (opt 2+3):\n";
+        std::cout << "  Before: " << tOrig << " us\n";
+        std::cout << "  After:  " << tOpt  << " us\n";
+        std::cout << "  Saved:  " << (tOrig - tOpt) << " us ("
+                  << ((tOrig - tOpt) / tOrig * 100.0) << "%)\n\n";
     }
-    std::cout << "  Max diff:  " << std::scientific << std::setprecision(6)
-              << maxDiff << " (correctness check)" << std::endl;
-    std::cout << std::endl;
-}
 
-int main() {
-    std::cout << "Лабораторная работа №7: Профилирование и оптимизация" << std::endl;
-    std::cout << "Сравнение оригинальной и оптимизированной версий CalcFFT" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Оптимизации:" << std::endl;
-    std::cout << "  1. In-place ShiftSample (без временного массива)" << std::endl;
-    std::cout << "  2. Прямой доступ к памяти (без проверки границ в operator())" << std::endl;
-    std::cout << "  3. Вынос условия isCircle из внутреннего цикла CreateFunction" << std::endl;
-    std::cout << "  4. In-place FFT (без копирования в/из fftw_complex массивов)" << std::endl;
-    std::cout << std::endl;
+    {
+        double tOrig = measure(iters, [&]() {
+            SampleComplex sc(N, N);
+            for (int j = 0; j < N; ++j)
+                for (int i = 0; i < N; ++i)
+                    sc(i, j) = Complex(i + j * 0.01, 0);
+            orig.ShiftSample(sc);
+        });
+        double tOpt = measure(iters, [&]() {
+            SampleComplex sc(N, N);
+            for (int j = 0; j < N; ++j)
+                for (int i = 0; i < N; ++i)
+                    sc(i, j) = Complex(i + j * 0.01, 0);
+            opt.ShiftSample(sc);
+        });
+        std::cout << "ShiftSample (opt 1):\n";
+        std::cout << "  Before: " << tOrig << " us\n";
+        std::cout << "  After:  " << tOpt  << " us\n";
+        std::cout << "  Saved:  " << (tOrig - tOpt) << " us ("
+                  << ((tOrig - tOpt) / tOrig * 100.0) << "%)\n\n";
+    }
 
-    runBenchmark(256, 20);
-    runBenchmark(512, 10);
-    runBenchmark(1024, 5);
+    {
+        Sample<double> funcTmp(N, N);
+        orig.CreateFunction(param, funcTmp);
+
+        double tOrig = measure(iters, [&]() {
+            SampleComplex sc = SampleComplex::FromSampleDouble(funcTmp);
+            orig.CalcFourier(sc);
+        });
+        double tOpt = measure(iters, [&]() {
+            SampleComplex sc = SampleComplex::FromSampleDouble(funcTmp);
+            opt.CalcFourier(sc);
+        });
+        std::cout << "CalcFourier (opt 1+2+4):\n";
+        std::cout << "  Before: " << tOrig << " us\n";
+        std::cout << "  After:  " << tOpt  << " us\n";
+        std::cout << "  Saved:  " << (tOrig - tOpt) << " us ("
+                  << ((tOrig - tOpt) / tOrig * 100.0) << "%)\n\n";
+    }
+
+    {
+        Sample<double> funcTmp(N, N);
+        orig.CreateFunction(param, funcTmp);
+        SampleComplex sc = SampleComplex::FromSampleDouble(funcTmp);
+        orig.CalcFourier(sc);
+
+        double tOrig = measure(iters, [&]() {
+            Sample<double> res(N, N);
+            for (int j = 0; j < N; ++j)
+                for (int i = 0; i < N; ++i)
+                    res(i, j) = sc.Modulus(i, j);
+        });
+        double tOpt = measure(iters, [&]() {
+            Sample<double> res(N, N);
+            double* resPtr = res.GetPointer();
+            const Complex* scData = sc.GetPointer();
+            const size_t total = static_cast<size_t>(N) * N;
+            for (size_t k = 0; k < total; ++k)
+                resPtr[k] = std::abs(scData[k]);
+        });
+        std::cout << "Modulus extraction (opt 2):\n";
+        std::cout << "  Before: " << tOrig << " us\n";
+        std::cout << "  After:  " << tOpt  << " us\n";
+        std::cout << "  Saved:  " << (tOrig - tOpt) << " us ("
+                  << ((tOrig - tOpt) / tOrig * 100.0) << "%)\n\n";
+    }
+
+    {
+        double tOrig = measure(iters, [&]() {
+            Sample<double> f, r;
+            orig.Calc(param, f, r);
+        });
+        double tOpt = measure(iters, [&]() {
+            Sample<double> f, r;
+            opt.Calc(param, f, r);
+        });
+        std::cout << "=== OVERALL Calc ===\n";
+        std::cout << "  Before: " << tOrig << " us  (" << tOrig / 1000.0 << " ms)\n";
+        std::cout << "  After:  " << tOpt  << " us  (" << tOpt / 1000.0 << " ms)\n";
+        std::cout << "  Saved:  " << (tOrig - tOpt) << " us ("
+                  << ((tOrig - tOpt) / tOrig * 100.0) << "%)\n";
+        std::cout << "  Speedup: " << std::setprecision(2) << (tOrig / tOpt) << "x\n";
+    }
 
     return 0;
 }
